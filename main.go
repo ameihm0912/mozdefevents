@@ -20,13 +20,18 @@ import (
 
 const docsPerSearch int = 100
 
+const (
+	_ = iota
+	MODEAUDIT
+	MODESYSLOG
+)
+
 type config struct {
 	eshost    string
 	startDate time.Time
 	endDate   time.Time
+	mode      int
 	hostmatch string
-
-	results []event
 }
 
 var cfg config
@@ -111,6 +116,7 @@ type event struct {
 		OriginalUser string `json:"originaluser"`
 		User         string `json:"user"`
 		Path         string `json:"path"`
+		Program      string `json:"program"`
 	} `json:"details"`
 }
 
@@ -192,6 +198,7 @@ func main() {
 
 	var qry queryContainer
 	if *auditmode {
+		cfg.mode = MODEAUDIT
 		qry, err = buildAuditSearch()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -211,8 +218,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
-		auditResults()
 	} else if *syslogmode {
+		cfg.mode = MODESYSLOG
 		qry, err = buildSyslogSearch()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -232,12 +239,20 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
-		syslogResults()
 	}
 }
 
-func auditResults() {
-	for _, x := range cfg.results {
+func showResults(results []event) {
+	switch cfg.mode {
+	case MODEAUDIT:
+		auditResults(results)
+	case MODESYSLOG:
+		syslogResults(results)
+	}
+}
+
+func auditResults(results []event) {
+	for _, x := range results {
 		evstr := "unknown audit event"
 		if x.Category == "execve" {
 			evstr = "[execve]"
@@ -261,11 +276,18 @@ func auditResults() {
 	}
 }
 
-func syslogResults() {
-	for _, x := range cfg.results {
-		evstr := "[syslog] unknown syslog event"
+func syslogResults(results []event) {
+	for _, x := range results {
+		evstr := "[syslog]"
+		if x.Details.Program != "" {
+			evstr += fmt.Sprintf(" (%v)", x.Details.Program)
+		} else {
+			evstr += " (unknownprogram)"
+		}
 		if x.Summary != "" {
-			evstr = fmt.Sprintf("[syslog] %v", x.Summary)
+			evstr += " " + x.Summary
+		} else {
+			evstr += " no summary found in event"
 		}
 		fmt.Fprintf(os.Stdout, "%v %v %v\n", x.Timestamp,
 			x.Details.Hostname, evstr)
@@ -316,6 +338,7 @@ func runQueryIndex(qry queryContainer, index string, doctype string) error {
 		if res.Hits.Len() == 0 {
 			break
 		}
+		tmpresults := make([]event, 0)
 		for _, x := range res.Hits.Hits {
 			var nev event
 			err = json.Unmarshal(*x.Source, &nev)
@@ -326,9 +349,9 @@ func runQueryIndex(qry queryContainer, index string, doctype string) error {
 			if err != nil {
 				return err
 			}
-			cfg.results = append(cfg.results, nev)
-			//fmt.Println(string(*x.Source))
+			tmpresults = append(tmpresults, nev)
 		}
+		showResults(tmpresults)
 		qry.From += docsPerSearch
 	}
 	return nil
